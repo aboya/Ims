@@ -16,6 +16,16 @@
             android:authorities="${applicationId}.shizuku"
             android:exported="true"
             android:multiprocess="false" />
+
+        <receiver
+            android:name=".ConfigChangeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SIM_STATE_CHANGED" />
+                <action android:name="android.telephony.action.CARRIER_CONFIG_CHANGED" />
+                <action android:name="io.github.vvb2060.ims.action.APPLY" />
+            </intent-filter>
+        </receiver>
     </application>
 
     <overlay

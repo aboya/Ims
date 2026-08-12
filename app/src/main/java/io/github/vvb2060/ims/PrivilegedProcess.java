@@ -19,6 +19,10 @@ import android.util.Log;
 import android.telephony.TelephonyManager;
 import android.view.ViewDebug;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+
 public class PrivilegedProcess extends Instrumentation {
     static final String TAG = "vvb";
 
@@ -73,25 +77,58 @@ public class PrivilegedProcess extends Instrumentation {
         var sm = context.getSystemService(SubscriptionManager.class);
 
         for (var subId : sm.getActiveSubscriptionIdList()) {
-            var values = getConfig();
-            var bundle = cm.getConfigForSubId(subId);
-
             var info = sm.getActiveSubscriptionInfo(subId);
-            String mccmnc = info.getMccString() + info.getMncString();
-            //Log.d("IMS_DEBUG", "mccmnc = " + mccmnc);
-            if (bundle == null || bundle.getInt("vvb2060_config_version", 0) != BuildConfig.VERSION_CODE) {
-                values.putInt("vvb2060_config_version", BuildConfig.VERSION_CODE);
-
-
-                 if (mccmnc.equals("25001")) {
-                  //   Log.d("IMS_DEBUG", "Apply MTS");
-                        values.putAll(GetMts());
-                 }
-
-                cm.overrideConfig(subId, values, persistent);
-
+            if (info == null) {
+                Log.i(TAG, "subId=" + subId + " skipped: no subscription info");
+                continue;
             }
+            var mcc = info.getMccString();
+            var mnc = info.getMncString();
+            if (mcc == null || mnc == null) {
+                // SIM ещё не отдала MCC/MNC. Применить сейчас — значит записать конфиг
+                // без оператор-специфичной части, поэтому ждём следующего вызова.
+                Log.i(TAG, "subId=" + subId + " skipped: SIM records not loaded");
+                continue;
+            }
+            var mccmnc = mcc + mnc;
+
+            var values = getConfig();
+            values.putInt("vvb2060_config_version", BuildConfig.VERSION_CODE);
+            if (mccmnc.equals("25001")) {
+                values.putAll(GetMts());
+            }
+
+            var stale = staleKeys(cm.getConfigForSubId(subId), values);
+            if (stale.isEmpty()) {
+                Log.i(TAG, "subId=" + subId + " (" + mccmnc + ") up to date, "
+                        + values.size() + " keys checked");
+                continue;
+            }
+            Log.i(TAG, "subId=" + subId + " (" + mccmnc + ") applying persistent=" + persistent
+                    + ", stale=" + stale);
+            cm.overrideConfig(subId, values, persistent);
         }
+    }
+
+    /**
+     * Ключи, которых в действующем конфиге нет или значение отличается.
+     * Сверяем фактические значения, а не маркер версии: маркер не замечает ни правок
+     * в getConfig() без бампа versionCode, ни чужих перезаписей поверх наших ключей.
+     */
+    private static List<String> staleKeys(PersistableBundle current, PersistableBundle wanted) {
+        var stale = new ArrayList<String>();
+        for (var key : wanted.keySet()) {
+            var want = wanted.get(key);
+            var have = current == null ? null : current.get(key);
+            boolean same;
+            if (want instanceof int[] a && have instanceof int[] b) {
+                same = Arrays.equals(a, b);
+            } else {
+                same = want != null && want.equals(have);
+            }
+            if (!same) stale.add(key);
+        }
+        return stale;
     }
     private  static PersistableBundle GetMts() {
         var bundle = new PersistableBundle();
@@ -115,6 +152,13 @@ public class PrivilegedProcess extends Instrumentation {
 
         bundle.putString(CarrierConfigManager.KEY_CARRIER_NAME_STRING, "Mts");
         //bundle.putString(CarrierConfigManager.Key_allowed, "Mts");
+
+        // Подмена имени работает (gsm.sim.operator.alpha = Mts), но в роуминге оно не
+        // отрисовывается: display-condition из EF_SPN запрещает показ SPN вне домашней сети.
+        // 3 = показывать и SPN, и PLMN. Плюс правило берёт роуминг из ServiceState, где
+        // из-за KEY_FORCE_HOME_NETWORK_BOOL уже стоит HOME.
+        bundle.putInt(CarrierConfigManager.KEY_SPN_DISPLAY_CONDITION_OVERRIDE_INT, 3);
+        bundle.putBoolean(CarrierConfigManager.KEY_SPN_DISPLAY_RULE_USE_ROAMING_FROM_SERVICE_STATE_BOOL, true);
         return bundle;
     }
 

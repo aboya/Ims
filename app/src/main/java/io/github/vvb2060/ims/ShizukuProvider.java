@@ -69,7 +69,7 @@ public class ShizukuProvider extends rikka.shizuku.ShizukuProvider {
         }
     }
 
-    private static void startInstrument(Context context) {
+    static void startInstrument(Context context) {
         try {
             var binder = ServiceManager.getService(Context.ACTIVITY_SERVICE);
             var am = IActivityManager.Stub.asInterface(new ShizukuBinderWrapper(binder));
