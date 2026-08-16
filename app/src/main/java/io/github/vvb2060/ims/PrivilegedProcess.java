@@ -130,6 +130,21 @@ public class PrivilegedProcess extends Instrumentation {
         }
         return stale;
     }
+    /**
+     * Нейтральные значения оператор-специфичных ключей — те же, что у AOSP по умолчанию.
+     * Нужны потому, что mOverrideConfigs / mPersistentOverrideConfigs в com.android.phone
+     * индексируются phoneId (слотом), а не subId: при смене SIM в слоте наш override
+     * остаётся и достаётся новой симке. Пишем ключи всегда, чтобы staleKeys() заметил
+     * чужой остаток и перетёр его.
+     */
+    private static void putCarrierNameDefaults(PersistableBundle bundle) {
+        bundle.putString(CarrierConfigManager.KEY_SIM_COUNTRY_ISO_OVERRIDE_STRING, "");
+        bundle.putBoolean(CarrierConfigManager.KEY_CARRIER_NAME_OVERRIDE_BOOL, false);
+        bundle.putString(CarrierConfigManager.KEY_CARRIER_NAME_STRING, "");
+        bundle.putInt(CarrierConfigManager.KEY_SPN_DISPLAY_CONDITION_OVERRIDE_INT, -1);
+        bundle.putBoolean(CarrierConfigManager.KEY_SPN_DISPLAY_RULE_USE_ROAMING_FROM_SERVICE_STATE_BOOL, false);
+    }
+
     private  static PersistableBundle GetMts() {
         var bundle = new PersistableBundle();
 
@@ -164,6 +179,7 @@ public class PrivilegedProcess extends Instrumentation {
 
     private static PersistableBundle getConfig() {
         var bundle = new PersistableBundle();
+        putCarrierNameDefaults(bundle);
         bundle.putBoolean(CarrierConfigManager.KEY_CARRIER_VOLTE_AVAILABLE_BOOL, true);
         bundle.putBoolean(CarrierConfigManager.KEY_CARRIER_SUPPORTS_SS_OVER_UT_BOOL, true);
         bundle.putBoolean(CarrierConfigManager.KEY_CARRIER_VT_AVAILABLE_BOOL, true);

@@ -45,6 +45,24 @@ Shizuku не стартует после перезагрузки сам — п�
 Persistent-слоя достаточно: конфиг работает и при пустом RAM-слое (проверено —
 подмена имени оператора действовала с `mOverrideConfigs` = 0 ключей).
 
+### Оверрайд живёт в слоте, а не в симке
+
+Оба массива в `CarrierConfigLoader` индексируются **phoneId (слотом)**, хотя API принимает
+subId. При смене SIM AOSP сбрасывает `mConfigFromDefaultApp` / `mConfigFromCarrierApp`, но
+override-слои оставляет — они считаются пользовательскими. Итог: записали оператор-специфичные
+ключи для симки в слоте 0, вынули её, вставили другую — новая унаследовала чужой конфиг.
+
+Ловилось так: `Phone Id = 0 / mPersistentOverrideConfigs: carrier_name_string = Mts,
+sim_country_iso_override_string = us`, при том что в слоте 0 сидела eSIM Cellfie (282/04),
+и в `dumpsys isub` у неё уже стояло `carrierName=Mts countryIso=us`.
+
+Поэтому **все оператор-специфичные ключи пишутся всегда**: `getConfig()` кладёт нейтральные
+значения (`putCarrierNameDefaults`), `GetMts()` перекрывает их для 25001. Иначе `staleKeys()`
+чужой остаток не видит — он сверяет только те ключи, что мы собираемся писать.
+
+Осадок в `siminfo` (`carrierName`) и в `gsm.sim.operator.alpha` после чистки конфига держится
+до перечитки SIM records — авиарежим или ребут.
+
 ### Почему настройки «слетают выборочно»
 
 Файл на диске: `carrierconfig-<пакет carrier-приложения>-override-<ICCID>-<carrierId>.xml`.
@@ -106,7 +124,9 @@ adb shell dumpsys telephony.registry      # ServiceState, IMS PDN, notifyDataCon
   ```bash
   JAVA_HOME="D:/Program Files/Android Studio/jbr" ./gradlew :app:assembleRelease
   ```
-- `GRADLE_USER_HOME` = `C:\temp\gradle` — чистка temp сносит кэш целиком.
+- `GRADLE_USER_HOME` = `D:\ProgramData\AndroidStudioSDK\.gradle` (машинная переменная). В
+  `C:\temp` лежит только то, что не жалко потерять; всё, что тянется по сети (дистрибутивы
+  Gradle в `wrapper\dists`, зависимости в `caches\modules-2`), живёт на D.
 - **proguard вырезает `Log.d` и `Log.v`** в release (`-assumenosideeffects`). Диагностику
   писать через `Log.i`.
 

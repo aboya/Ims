@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew :app:assembleDebug --console=plain)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\\",\"D:\\\\\" -Recurse -Filter \"java.exe\" -ErrorAction SilentlyContinue -Depth 6 | Where-Object { $_.FullName -match \"jbr|jdk|jre\" } | Select-Object -First 10 -ExpandProperty FullName)",
+      "Bash(export JAVA_HOME=\"D:/Program Files/Android Studio/jbr\")",
+      "Bash('D:/Program Files/Android Studio/jbr/bin/java' -version)",
+      "Bash(cd \"D:/projects/ImsGit/DropCall\")",
+      "WebSearch",
+      "WebFetch(domain:android.googlesource.com)",
+      "Bash(python *)",
+      "Bash(unzip -p android.jar android/telephony/CarrierConfigManager.class)",
+      "Bash(adb devices *)",
+      "Bash(adb shell *)",
+      "Bash(./gradlew :app:assembleRelease --console=plain -q)",
+      "Bash(echo \"EXIT=$?\")",
+      "Read(//c/temp/gradle/wrapper/dists/**)",
+      "Bash(./gradlew :app:assembleRelease --console=plain)",
+      "PowerShell($ProgressPreference='SilentlyContinue'; try { $r = Invoke-WebRequest -Uri 'https://services.gradle.org/distributions/gradle-9.2.1-bin.zip' -Method Head -TimeoutSec 45; \"OK status=$\\($r.StatusCode\\) len=$\\($r.Headers['Content-Length']\\)\" } catch { \"FAIL: $\\($_.Exception.Message\\)\" })",
+      "Bash(JAVA_HOME=\"D:/Program Files/Android Studio/jbr\" ./gradlew :app:assembleRelease --console=plain -Porg.gradle.java.installations.auto-download=false)",
+      "Bash(adb install *)",
+      "Bash(JAVA_HOME=\"D:/Program Files/Android Studio/jbr\" ./gradlew :app:assembleRelease --console=plain -q)",
+      "Bash(grep -vE \"^\\\\s*$\")",
+      "Bash(tail -3)",
+      "Bash(adb pull *)",
+      "Bash(MSYS_NO_PATHCONV=1 adb pull /system/framework/framework-res.apk C:/temp/user/claude/D--projects-ImsGit-Ims/5c2187c0-5f30-400f-a4ff-c2320c9da752/scratchpad/framework-res.apk)",
+      "Bash(D:/ProgramData/AndroidStudioSDK/build-tools/36.1.0/aapt2.exe dump *)",
+      "Bash(grep -E \"string/wfcSpnFormat_\\(spn|spn_wifi|wifi_calling|spn_wifi_calling\\)$\" -A 2)",
+      "Bash(unzip -p \"D:/ProgramData/AndroidStudioSDK/platforms/android-36/android.jar\" android/telephony/CarrierConfigManager.class)",
+      "PowerShell(Get-ChildItem env: | Where-Object { $_.Name -match 'GRADLE|JAVA|ANDROID|KOTLIN|TEMP|TMP|USERPROFILE' } | Format-Table -AutoSize)",
+      "PowerShell(Get-ChildItem C:\\\\temp\\\\gradle | Select-Object Mode,Name,LastWriteTime | Format-Table -AutoSize; \"---- sizes ----\"; Get-ChildItem C:\\\\temp\\\\gradle -Directory | ForEach-Object { $s = \\(Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum\\).Sum; \"{0,-20} {1,10:N1} MB\" -f $_.Name, \\($s/1MB\\) })",
+      "PowerShell(\"User  : \" + [Environment]::GetEnvironmentVariable\\('GRADLE_USER_HOME','User'\\); \"Machine: \" + [Environment]::GetEnvironmentVariable\\('GRADLE_USER_HOME','Machine'\\))",
+      "PowerShell(adb shell *)",
+      "PowerShell(adb logcat *)",
+      "PowerShell(git log --oneline -8 -- app/src/main/java/io/github/vvb2060/ims/PrivilegedProcess.java; git log -p -3 -- app/src/main/java/io/github/vvb2060/ims/PrivilegedProcess.java --% | Select-String -Pattern \"25001|mccmnc|GetMts\")",
+      "PowerShell($env:JAVA_HOME=\"D:/Program Files/Android Studio/jbr\"; ./gradlew :app:assembleRelease -q 2>&1 | Select-Object -Last 20)",
+      "PowerShell(adb install *)",
+      "PowerShell(Test-Connection *)"
+    ]
+  }
+}
