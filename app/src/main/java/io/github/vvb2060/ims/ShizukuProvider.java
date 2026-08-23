@@ -40,7 +40,12 @@ public class ShizukuProvider extends rikka.shizuku.ShizukuProvider {
         if (METHOD_SEND_BINDER.equals(method)) {
             Shizuku.addBinderReceivedListener(() -> {
                 if (!skip && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-                    startInstrument(getContext());
+                    // Через этот вход прогон приходит и после каждого force-stop: процесс
+                    // поднялся заново, Shizuku прислал биндер. Без общего гейта получается
+                    // вечный цикл запись → бродкаст → force-stop → биндер → запись.
+                    if (RunGuard.claim(getContext(), "provider")) {
+                        startInstrument(getContext());
+                    }
                 }
             });
         } else if (METHOD_GET_BINDER.equals(method) && callingUid == sdkUid && extras != null) {
@@ -69,6 +74,11 @@ public class ShizukuProvider extends rikka.shizuku.ShizukuProvider {
         }
     }
 
+    /**
+     * Внимание: startInstrumentation() перед запуском делает force-stop целевого пакета,
+     * то есть убивает и процесс приложения. Ничего в памяти между прогонами не живёт;
+     * гейт вызывать до, а не после — см. {@link RunGuard}.
+     */
     static void startInstrument(Context context) {
         try {
             var binder = ServiceManager.getService(Context.ACTIVITY_SERVICE);

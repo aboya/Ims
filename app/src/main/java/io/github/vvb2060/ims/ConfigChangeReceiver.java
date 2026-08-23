@@ -8,11 +8,9 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.util.Log;
 
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 
 import rikka.shizuku.Shizuku;
 
@@ -35,21 +33,11 @@ public class ConfigChangeReceiver extends BroadcastReceiver {
      */
     private static final long BINDER_TIMEOUT_MS = 2000;
 
-    /** Пачку бродкастов при загрузке достаточно обработать один раз. */
-    private static final long DEBOUNCE_MS = 5000;
-
-    private static final AtomicLong lastRun = new AtomicLong();
-
     @Override
     public void onReceive(Context context, Intent intent) {
         // Шумит на каждый SIM- и carrier-бродкаст, а пока Shizuku не поднят — пачками.
         // Раскомментировать, когда снова понадобится ловить доставку бродкастов.
         // Log.i(TAG, "receiver: " + intent.getAction());
-
-        var now = SystemClock.elapsedRealtime();
-        var prev = lastRun.get();
-        if (prev != 0 && now - prev < DEBOUNCE_MS) return;
-        lastRun.set(now);
 
         var appContext = context.getApplicationContext();
         var pending = goAsync();
@@ -67,7 +55,11 @@ public class ConfigChangeReceiver extends BroadcastReceiver {
         listener[0] = () -> {
             try {
                 if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-                    ShizukuProvider.startInstrument(appContext);
+                    // Гейт спрашиваем здесь, а не в начале onReceive: пока Shizuku лежит,
+                    // бродкасты идут пачками и впустую съедали бы и debounce, и лимит.
+                    if (RunGuard.claim(appContext, "receiver")) {
+                        ShizukuProvider.startInstrument(appContext);
+                    }
                 } else {
                     Log.i(TAG, "receiver: shizuku permission not granted");
                 }

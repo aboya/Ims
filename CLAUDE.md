@@ -17,6 +17,23 @@ Shizuku присылает биндер
 Второй вход — `ConfigChangeReceiver` на `SIM_STATE_CHANGED` / `CARRIER_CONFIG_CHANGED`
 и на ручной `io.github.vvb2060.ims.action.APPLY`.
 
+**`startInstrumentation()` делает force-stop нашего же пакета** перед запуском:
+
+```
+I/ActivityManager: Force stopping io.github.vvb2060.ims appid=10448 user=0: start instr
+I/ActivityManager: Killing 4289:io.github.vvb2060.ims/u0a448 (adj 0): stop … due to start instr
+```
+
+Из этого следует всё остальное про состояние между прогонами:
+
+- **любой статик обнуляется на каждом прогоне.** Debounce и счётчик прогонов жили в
+  статиках и не работали никогда — цикл обрывал `staleKeys()`, а не они. Всё, что должно
+  пережить прогон, лежит на диске (`RunGuard`, SharedPreferences, `commit()` а не
+  `apply()` — убивают сразу после `startInstrument()`);
+- **после force-stop процесс поднимается заново, Shizuku снова присылает биндер**, и
+  провайдер запускает следующий прогон. Поэтому гейт обязан быть общим для обоих входов,
+  иначе получается вечный цикл запись → бродкаст → force-stop → биндер → запись.
+
 Приложение **не может отработать без запущенного Shizuku**. На тестовом Pixel 10 Pro
 Shizuku не стартует после перезагрузки сам — поднимается только когда включён Wi-Fi
 (через wireless debugging). Без Wi-Fi после ребута конфиг живёт исключительно за счёт
@@ -44,6 +61,31 @@ Shizuku не стартует после перезагрузки сам — п�
 
 Persistent-слоя достаточно: конфиг работает и при пустом RAM-слое (проверено —
 подмена имени оператора действовала с `mOverrideConfigs` = 0 ключей).
+
+### Почему persistent вообще проходит
+
+`overrideConfig()` первым делом зовёт `secureOverrideConfig()`, ещё до записи куда-либо:
+
+```java
+if (TelephonyPermissions.isShell(Binder.getCallingUid()))
+    throw new SecurityException("overrideConfig cannot be invoked by shell");
+...
+if (persistent && isUserBuild() && !isSystemApp())
+    throw new SecurityException(
+        "overrideConfig with persistent=true only can be invoked by system app");
+```
+
+`isUserBuild()` = `"user".equals(Build.TYPE)` — на релизной прошивке всегда true.
+`isSystemApp()` смотрит флаги пакета, полученного через `getNameForUid(getCallingUid())`.
+
+Мы проходим **только благодаря sdk-sandbox**: вызов идёт с sandbox-uid (`appUid + 10000`),
+который резолвится в `com.google.android.sdksandbox` — а он системный. Прямо из процесса
+приложения persistent-запись на user-build отлетела бы по SecurityException, причём до
+записи, то есть не применилось бы вообще ничего, даже RAM-слой. Отсюда же и Permission
+denied у `cmd phone cc` из shell — первая проверка режет вызовы по uid.
+
+Проверять, доступен ли persistent, рефлексией (`canPersistent()`) смысла мало: на этой
+прошивке оба метода на месте, и она возвращает true.
 
 ### Оверрайд живёт в слоте, а не в симке
 
@@ -77,19 +119,106 @@ sim_country_iso_override_string = us`, при том что в слоте 0 си
   а в таблице `siminfo` по subId. Приложение их не трогает — carrier config только
   разрешает их и задаёт дефолты. Новый subId = свежие дефолты.
 
-### Почему сверка по ключам, а не по маркеру версии
+### Наш файл сносит чистилка кэша carrier-приложения
 
-Было: `bundle.getInt("vvb2060_config_version") != BuildConfig.VERSION_CODE` → пропустить.
-Проблемы:
+Главная причина пропаж, и она не про нас. `clearCachedConfigForPackage(pkg)` фильтрует
+файлы по префиксу:
 
-1. Правки в `getConfig()` без бампа `versionCode` не применялись никогда.
-2. Маркер читается из **склеенного** конфига и не замечает чужих перезаписей.
-3. `GetMts()` под тем же guard'ом: если при первом прогоне `getMccString()` вернул `null`,
-   писался базовый конфиг с маркером, и MTS-часть не применялась уже никогда.
+```java
+name.startsWith("carrierconfig-" + packageName + "-")
+```
 
-Стало: `staleKeys()` сверяет фактические значения всех ключей. Обязательно, а не «удобнее»:
-собственная запись конфига рассылает `CARRIER_CONFIG_CHANGED`, ресивер срабатывает повторно,
-и с прежним guard'ом это был бы бесконечный цикл.
+Под `carrierconfig-com.google.android.carrier-` попадает и наш
+`carrierconfig-com.google.android.carrier-override-<ICCID>-<carrierId>.xml`. Сопутствующий
+ущерб: файлы самого carrier-приложения тут же регенерируются, наш — нет, его пишет
+**только** `overrideConfig(..., persistent=true)`.
+
+Три триггера, все три ведут к `updateConfigForPhoneId()` → `CARRIER_CONFIG_CHANGED`:
+
+| триггер | что сносит |
+|---|---|
+| `notifyConfigChangedForSubId()` от carrier-приложения | `carrierconfig-<вызывающий пакет>-*` |
+| `EVENT_PACKAGE_CHANGED` для carrier-приложения | `carrierconfig-<pkg>-*` |
+| смена `build_fingerprint` (OTA) | **все** `carrierconfig-*` |
+
+Первый — рутинный: carrier-приложение зовёт его при смене SIM, доопределении carrierId,
+обновлении entitlement. Никакого OTA и обновления пакетов для пропажи не нужно.
+
+**RAM-слои при этом не трогаются** — `clearCachedConfigForPackage` только удаляет файлы.
+Поэтому пропажа не видна до ребута: `mOverrideConfigs` цел, склеенный конфиг верный,
+а на диске уже пусто.
+
+Так и потерялся конфиг 21.08.2026: три `-override-` файла (были 15.08) исчезли, до ребута
+всё работало, после — `mPersistentOverrideConfigs : null` на обоих слотах.
+
+### Когда пишем конфиг
+
+Маркер версии (`bundle.getInt("vvb2060_config_version") != BuildConfig.VERSION_CODE`)
+выброшен давно: правки в `getConfig()` без бампа `versionCode` не применялись никогда,
+маркер читается из **склеенного** конфига и не замечает чужих перезаписей, а `GetMts()`
+под тем же guard'ом не применялся уже никогда, если при первом прогоне `getMccString()`
+вернул `null`.
+
+Пришедший ему на смену `staleKeys()` (сверка фактических значений) как единственное
+условие записи тоже оказался неполон: он отвечает на вопрос «действует ли конфиг», а нужен
+ответ на «лежит ли persistent-копия на диске». В момент чистки кэша эти ответы расходятся —
+файла уже нет, значения ещё на месте, `staleKeys()` пуст, запись пропускается, и пропажа
+обнаруживается только ребутом.
+
+Стало — два независимых повода, эвристик нет:
+
+1. `staleKeys()` не пуст — значения перетёрли;
+2. persistent-копии нет на диске.
+
+Второй повод проверяется прямо: привилегированный процесс дёргает `dump()` у сервиса
+`carrier_config` и ищет в секции `Cached config files` строку с нужным carrierId и
+префиксом ICCID. Каталог `com.android.phone` напрямую не прочесть (нужен его uid, а
+делегирование даёт только permissions), зато в шелловском наборе есть
+`android.permission.DUMP` — ровно то, что `CarrierConfigLoader.dump()` и проверяет.
+
+Безусловная запись «на всякий случай» не годится: запись **действительно** возвращается
+к нам новым `CARRIER_CONFIG_CHANGED` — не напрямую (`overrideConfig` заканчивается на
+`updateSubscriptionDatabase()`), а через `siminfo`. Замерено на живом устройстве:
+128 прогонов за 7 секунд. Теперь прогон, которому нечего делать, не пишет и потому не
+порождает нового бродкаста — цепочка обрывается сама:
+
+```
+provider: run 1
+cached config files: 6
+subId=5 (25001) up to date, 27 keys checked
+subId=9 (20601) up to date, 27 keys checked
+```
+
+`RunGuard` остался, но только как глушилка и предохранитель, не как условие записи:
+
+```
+DEBOUNCE_MS = 5000    гасит пачку бродкастов
+QUIET_MS    = 60_000  тишина, после которой предохранитель взводится заново
+MAX_RUNS    = 20      предохранитель, срабатывать не должен
+```
+
+Гейт спрашивается только когда Shizuku реально доступен — иначе пачки бродкастов при
+лежащем Shizuku съедали бы и debounce, и лимит впустую.
+
+#### Откуда берётся ICCID
+
+Прямые API его не отдают, хотя права делегированы: `SubscriptionInfo.getIccId()` возвращает
+пустую строку, `TelephonyManager.getSimSerialNumber()` кидает
+`SecurityException: getIccSerialNumber: The uid 20448 does not meet the requirements to
+access device identifiers` — редактирование идентификаторов смотрит на пакет вызывающего,
+а он у нас sdk-sandbox. Берём из дампа `isub`: там ICCID урезан до 9 символов, а для сверки
+с именем файла нужно 5 (`getFilePathForLogging()` оставляет первые 5 и дописывает
+фиксированную звёздочную строку).
+
+Если ICCID не достался, матч вырождается в счётный: файлов с нужным carrierId должно быть
+не меньше, чем активных SIM с таким же carrierId.
+
+**Остаточная неточность.** Пять символов ICCID — это префикс эмитента, у всех SIM одного
+оператора он общий. Поэтому файл от вынутой SIM того же оператора сойдёт за наш. Случай
+узкий: он требует, чтобы `staleKeys()` при этом был пуст, то есть чтобы в слоте лежал
+override от прежней симки **того же** оператора (см. «Оверрайд живёт в слоте, а не в
+симке»). При обычной чистке кэша вопрос не встаёт — `clearCachedConfigForPackage` сносит
+все файлы разом, частичных состояний не бывает.
 
 SIM с нечитаемыми MCC/MNC пропускается до следующего прогона — лучше отложить, чем записать
 конфиг без оператор-специфичной части.
@@ -99,11 +228,32 @@ SIM с нечитаемыми MCC/MNC пропускается до следую
 ```bash
 adb shell dumpsys carrier_config          # mPersistentOverrideConfigs / mOverrideConfigs
                                           # + "Cached config files" + лог событий
-adb shell logcat -s vvb                   # applying stale=[...] / up to date, N keys checked
+adb shell logcat -s vvb                   # run N / debounced / cached config files: N
+                                          # applying … stale=[…] | persistent copy missing
 adb shell logcat -G 16M                   # буфер по умолчанию 256 KiB, боевые события вытесняются
 adb shell dumpsys telecom                 # PROPERTY_CHANGE: xsim | wifi — каким путём пошёл звонок
 adb shell dumpsys telephony.registry      # ServiceState, IMS PDN, notifyDataConnectionForSubscriber
+adb shell am broadcast -a io.github.vvb2060.ims.action.APPLY     -n io.github.vvb2060.ims/.ConfigChangeReceiver     # ручной прогон
 ```
+
+`cached config files: dump failed` в логе означает, что проверка наличия файла не
+отработала и решение осталось за `staleKeys()`.
+
+**Первым делом смотреть на файлы, а не на слои в памяти:**
+
+```bash
+adb shell dumpsys carrier_config | sed -n '/Cached config files/,$p' | grep override
+```
+
+Должно быть по строке `carrierconfig-…-override-<ICCID>-<carrierId>.xml` на активную SIM.
+Нет строки — persistent-копии нет, и до ближайшего ребута это больше нигде не видно:
+`mPersistentOverrideConfigs` в дампе остаётся полным, потому что чистилка кэша трогает
+только файлы. Список печатается фильтром `startsWith("carrierconfig-")`, то есть без
+изъятий; ICCID в именах маскируется, первые 5 цифр видны.
+
+Секция `CarrierConfigLoader local log` — кольцевой буфер, живёт от загрузки; строки
+`Notified carrier config changed`, `Package changed:` и `Build fingerprint changed`
+как раз и означают, что кэш почистили.
 
 Маркеры в `dumpsys telecom` по звонку:
 
@@ -112,7 +262,16 @@ adb shell dumpsys telephony.registry      # ServiceState, IMS PDN, notifyDataCon
 - нет свойств + `ImsReasonInfo: null` — звонок вообще не IMS (CS)
 - инициатор `REQUEST_DISCONNECT` в скобках: `cgad` = com.google.android.dialer (пользователь)
 
-`cmd phone cc get-value` из shell не работает — Permission denied, нужны привилегии.
+`cmd phone cc` из shell не работает: `secureOverrideConfig()` режет вызовы по uid —
+`isShell(getCallingUid())` → `SecurityException("overrideConfig cannot be invoked by shell")`.
+
+Разбирать саму реализацию удобнее из прошивки, а не по исходникам AOSP — они расходятся:
+
+```bash
+adb pull /system/priv-app/TeleService/TeleService.apk
+unzip -o TeleService.apk classes.dex -d dex
+"$ANDROID_HOME/build-tools/36.1.0/dexdump" -d dex/classes.dex > dd.txt   # ~730k строк
+```
 
 ## Сборка
 
