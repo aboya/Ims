@@ -10,12 +10,16 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.Parcel;
 import android.os.Process;
 import android.os.ServiceManager;
 import android.system.Os;
 import android.util.Log;
+
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.lsposed.hiddenapibypass.LSPass;
 
@@ -27,7 +31,8 @@ public class ShizukuProvider extends rikka.shizuku.ShizukuProvider {
         LSPass.setHiddenApiExemptions("");
     }
 
-    private boolean skip = false;
+    // Пишется на binder-потоке (GET_BINDER), читается на main (слушатель SEND_BINDER).
+    private volatile boolean skip = false;
 
     @Override
     public Bundle call(String method, String arg, Bundle extras) {
@@ -43,14 +48,14 @@ public class ShizukuProvider extends rikka.shizuku.ShizukuProvider {
                     // Через этот вход прогон приходит и после каждого force-stop: процесс
                     // поднялся заново, Shizuku прислал биндер. Без общего гейта получается
                     // вечный цикл запись → бродкаст → force-stop → биндер → запись.
-                    if (RunGuard.claim(getContext(), "provider")) {
+                    if (RunGuard.claim(getContext(), "provider") == RunGuard.RUN) {
                         startInstrument(getContext());
                     }
                 }
             });
         } else if (METHOD_GET_BINDER.equals(method) && callingUid == sdkUid && extras != null) {
             skip = true;
-            Shizuku.addBinderReceivedListener(() -> {
+            runOnceWithBinder(() -> {
                 var binder = extras.getBinder("binder");
                 if (binder != null && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
                     startShellPermissionDelegate(binder, sdkUid);
@@ -58,6 +63,33 @@ public class ShizukuProvider extends rikka.shizuku.ShizukuProvider {
             });
         }
         return super.call(method, arg, extras);
+    }
+
+    /**
+     * Выполнить один раз, как только есть биндер Shizuku, — в том числе если он пришёл раньше.
+     * <p>
+     * SEND_BINDER от Shizuku и GET_BINDER от sandbox приходят почти одновременно, на разные
+     * binder-потоки. Обычный addBinderReceivedListener срабатывает только на будущую
+     * рассылку: если SEND_BINDER обработался первым, слушатель не вызовется никогда,
+     * sandbox не получит transact и повиснет, не написав в лог ни строки. Так потерялся
+     * прогон 10.09.2026 при вставке SIM.
+     * <p>
+     * Sticky закрывает это почти целиком, но binderReady выставляется уже после рассылки —
+     * узкое окно остаётся. Его закрывает собственная проверка биндера: он присваивается
+     * до рассылки, так что либо мы его видим, либо рассылка ещё впереди и нас застанет.
+     */
+    private static void runOnceWithBinder(Runnable action) {
+        var fired = new AtomicBoolean();
+        var listener = new Shizuku.OnBinderReceivedListener[1];
+        listener[0] = () -> {
+            if (fired.getAndSet(true)) return;
+            Shizuku.removeBinderReceivedListener(listener[0]);
+            action.run();
+        };
+        Shizuku.addBinderReceivedListenerSticky(listener[0]);
+        if (Shizuku.pingBinder()) {
+            new Handler(Looper.getMainLooper()).post(listener[0]::onBinderReceived);
+        }
     }
 
     private static void startShellPermissionDelegate(IBinder binder, int sdkUid) {

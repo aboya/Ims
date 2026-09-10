@@ -29,6 +29,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
@@ -49,12 +50,26 @@ public class PrivilegedProcess extends Instrumentation {
     /** "[SubscriptionInfoInternal: id=5 iccId=897010182[****] simSlotIndex=0 …" */
     private static final Pattern SUB_ID_ICCID = Pattern.compile("[\\[ ]id=(\\d+) iccId=(\\d+)");
 
+    /**
+     * Сколько ждать transact от провайдера; обычно он приходит через ~200 мс после onCreate.
+     * Не пришёл — прогона уже не будет, а без finish() sandbox висит бесконечно: 10.09.2026
+     * он так прожил полчаса, пока его не снёс следующий прогон («Killing …: instrumentation
+     * started»). Следующим прогонам висящий sandbox не мешает, так что с окном debounce
+     * этот таймаут никак не связан.
+     */
+    private static final long TRANSACT_TIMEOUT_MS = 10_000;
+
+    /** Кто первым взял — transact или таймаут. Второй ничего не делает. */
+    private final AtomicBoolean started = new AtomicBoolean();
+
     @Override
     public void onCreate(Bundle arguments) {
+        var handler = new Handler(Looper.getMainLooper());
         var binder = new Binder() {
             @Override
             protected boolean onTransact(int code, @NonNull Parcel data, Parcel reply, int flags) throws RemoteException {
                 if (code == 1) {
+                    if (!started.compareAndSet(false, true)) return true;
                     try {
                         var context = getContext();
                         var persistent = canPersistent(context);
@@ -63,13 +78,18 @@ public class PrivilegedProcess extends Instrumentation {
                     } catch (Exception e) {
                         Log.e(TAG, Log.getStackTraceString(e));
                     }
-                    var handler = new Handler(Looper.getMainLooper());
                     handler.postDelayed(() -> finish(0, new Bundle()), 1000);
                     return true;
                 }
                 return super.onTransact(code, data, reply, flags);
             }
         };
+        handler.postDelayed(() -> {
+            if (!started.compareAndSet(false, true)) return;
+            Log.i(TAG, "privileged: no transact from provider in " + TRANSACT_TIMEOUT_MS
+                    + " ms, giving up");
+            finish(0, new Bundle());
+        }, TRANSACT_TIMEOUT_MS);
         var extras = new Bundle();
         extras.putBinder("binder", binder);
         var cr = getContext().getContentResolver();

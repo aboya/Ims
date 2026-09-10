@@ -12,6 +12,12 @@ import android.util.Log;
  * значения и наличие persistent-копии на диске. Гейт только глушит пачки бродкастов
  * и держит предохранитель.
  * <p>
+ * Глушить значит откладывать, а не выбрасывать: на debounce гейт отвечает, сколько
+ * осталось до конца окна, и ресивер повторяет запрос по его истечении. Прогон стартует
+ * по первому бродкасту пачки, а при смене SIM полезные — с subId и загруженными
+ * records — приходят на 0.8–1.4 с позже. Если их выбросить, прогон застаёт SIM
+ * незагруженной, и повторять его некому.
+ * <p>
  * Состояние лежит на диске, а не в статиках: {@code am.startInstrumentation()} перед
  * запуском делает force-stop нашего же пакета («Killing …: stop … due to start instr»
  * в логе ActivityManager), поэтому процесс приложения умирает на каждом прогоне и любой
@@ -38,14 +44,23 @@ final class RunGuard {
     private static final String KEY_LAST_RUN = "last_run";
     private static final String KEY_RUNS = "runs";
 
+    /** Ответ {@link #claim}: прогон разрешён и уже отмечен. */
+    static final long RUN = 0;
+
+    /** Ответ {@link #claim}: сработал предохранитель, не запускать и не повторять. */
+    static final long NEVER = -1;
+
     private RunGuard() {
     }
 
     /**
      * Отмечает прогон и говорит, запускать ли его. Вызывать строго перед
      * {@link ShizukuProvider#startInstrument}: сразу после него нас убьют.
+     *
+     * @return {@link #RUN}, {@link #NEVER} либо сколько миллисекунд осталось до конца
+     * окна debounce — после этого можно спросить снова
      */
-    static boolean claim(Context context, String who) {
+    static long claim(Context context, String who) {
         // elapsedRealtime() не годится: между прогонами процесс умирает, а отсчёт от
         // загрузки не с чем сравнивать, если сама загрузка была между ними.
         var prefs = context.createDeviceProtectedStorageContext()
@@ -60,7 +75,7 @@ final class RunGuard {
         var jumped = now < prev;
         if (prev != 0 && !jumped && now - prev < DEBOUNCE_MS) {
             Log.i(TAG, who + ": debounced");
-            return false;
+            return DEBOUNCE_MS - (now - prev);
         }
         if (prev == 0 || jumped || now - prev > QUIET_MS) runs = 0;
 
@@ -71,9 +86,9 @@ final class RunGuard {
 
         if (run > MAX_RUNS) {
             Log.i(TAG, who + ": run limit reached (" + MAX_RUNS + "), skipping");
-            return false;
+            return NEVER;
         }
         Log.i(TAG, who + ": run " + run);
-        return true;
+        return RUN;
     }
 }
