@@ -15,6 +15,7 @@ import android.os.ParcelFileDescriptor;
 import android.os.PersistableBundle;
 import android.os.RemoteException;
 import android.os.ServiceManager;
+import android.provider.DeviceConfig;
 import android.telephony.CarrierConfigManager;
 import android.telephony.SubscriptionManager;
 import android.util.Log;
@@ -78,6 +79,11 @@ public class PrivilegedProcess extends Instrumentation {
                     } catch (Exception e) {
                         Log.e(TAG, Log.getStackTraceString(e));
                     }
+                    try {
+                        disableQuicClose();
+                    } catch (Exception e) {
+                        Log.e(TAG, Log.getStackTraceString(e));
+                    }
                     handler.postDelayed(() -> finish(0, new Bundle()), 1000);
                     return true;
                 }
@@ -112,6 +118,28 @@ public class PrivilegedProcess extends Instrumentation {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /** Namespace/ключ из "adb shell device_config put connectivity close_quic_connection false". */
+    private static final String DEVICE_CONFIG_NAMESPACE_CONNECTIVITY = "connectivity";
+    private static final String KEY_CLOSE_QUIC_CONNECTION = "close_quic_connection";
+
+    /**
+     * То же самое, что "adb shell device_config put connectivity close_quic_connection false",
+     * но изнутри процесса. Работает только пока активна делегированная shell-identity
+     * (см. ShizukuProvider.startShellPermissionDelegate()) — WRITE_DEVICE_CONFIG есть у shell,
+     * из sdk-sandbox без делегирования вызов отлетел бы по SecurityException.
+     * <p>
+     * Перепроверяется на каждом прогоне, а не выставляется один раз: namespace connectivity
+     * периодически перезатирается синком серверных экспериментальных флагов (Phenotype/GMS).
+     */
+    private static void disableQuicClose() {
+        var current = DeviceConfig.getProperty(
+                DEVICE_CONFIG_NAMESPACE_CONNECTIVITY, KEY_CLOSE_QUIC_CONNECTION);
+        if ("false".equals(current)) return;
+        var ok = DeviceConfig.setProperty(DEVICE_CONFIG_NAMESPACE_CONNECTIVITY,
+                KEY_CLOSE_QUIC_CONNECTION, "false", false);
+        Log.i(TAG, "close_quic_connection: " + current + " -> false, " + (ok ? "ok" : "failed"));
     }
 
     @SuppressLint("MissingPermission")
